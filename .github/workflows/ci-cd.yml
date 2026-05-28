@@ -1,0 +1,170 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+
+jobs:
+  # ─────────────────────────────────────────
+  # 1. Backend — build + test
+  # ─────────────────────────────────────────
+  test-backend:
+    name: Backend — Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore InvoiceSaaS.sln
+
+      - name: Build
+        run: dotnet build InvoiceSaaS.sln --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test InvoiceSaaS.sln --no-build --configuration Release --verbosity normal
+
+  # ─────────────────────────────────────────
+  # 2. Frontend — install + test + build
+  # ─────────────────────────────────────────
+  test-frontend:
+    name: Frontend — Build & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/invoice-saas-ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/invoice-saas-ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test -- --watchAll=false --passWithNoTests
+        env:
+          CI: true
+
+      - name: Build
+        run: npm run build
+
+  # ─────────────────────────────────────────
+  # 3. Build Docker images + push to ECR
+  #    (solo en push a main)
+  # ─────────────────────────────────────────
+  build-and-push:
+    name: Build & Push to ECR
+    needs: [test-backend, test-frontend]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      api-image: ${{ steps.tags.outputs.api-image }}
+      frontend-image: ${{ steps.tags.outputs.frontend-image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tags
+        id: tags
+        run: |
+          REGISTRY=${{ steps.login-ecr.outputs.registry }}
+          SHA=${{ github.sha }}
+          echo "api-image=${REGISTRY}/invoicesaas-api:${SHA}"           >> $GITHUB_OUTPUT
+          echo "frontend-image=${REGISTRY}/invoicesaas-frontend:${SHA}" >> $GITHUB_OUTPUT
+          echo "registry=${REGISTRY}"                                    >> $GITHUB_OUTPUT
+
+      - name: Build & push API
+        run: |
+          docker build \
+            --target production \
+            --tag ${{ steps.tags.outputs.api-image }} \
+            --tag ${{ steps.tags.outputs.registry }}/invoicesaas-api:latest \
+            -f src/InvoiceSaaS.Api/Dockerfile .
+          docker push ${{ steps.tags.outputs.api-image }}
+          docker push ${{ steps.tags.outputs.registry }}/invoicesaas-api:latest
+
+      - name: Build & push Frontend
+        run: |
+          docker build \
+            --target production \
+            --tag ${{ steps.tags.outputs.frontend-image }} \
+            --tag ${{ steps.tags.outputs.registry }}/invoicesaas-frontend:latest \
+            ./frontend/invoice-saas-ui
+          docker push ${{ steps.tags.outputs.frontend-image }}
+          docker push ${{ steps.tags.outputs.registry }}/invoicesaas-frontend:latest
+
+  # ─────────────────────────────────────────
+  # 4. Deploy a EC2 via SSH
+  # ─────────────────────────────────────────
+  deploy:
+    name: Deploy to EC2
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy compose + nginx config to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "docker-compose.prod.yml,nginx.prod.conf"
+          target: /opt/invoicesaas
+
+      - name: Deploy
+        uses: appleboy/ssh-action@v1
+        env:
+          API_IMAGE: ${{ needs.build-and-push.outputs.api-image }}
+          FRONTEND_IMAGE: ${{ needs.build-and-push.outputs.frontend-image }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: API_IMAGE,FRONTEND_IMAGE,AWS_REGION,ECR_REGISTRY
+          script: |
+            set -e
+            cd /opt/invoicesaas
+
+            # Login to ECR
+            aws ecr get-login-password --region "$AWS_REGION" | \
+              docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+            # Pull nuevas imágenes
+            docker pull "$API_IMAGE"
+            docker pull "$FRONTEND_IMAGE"
+
+            # Reiniciar servicios con las nuevas imágenes
+            API_IMAGE="$API_IMAGE" FRONTEND_IMAGE="$FRONTEND_IMAGE" \
+              docker-compose -f docker-compose.prod.yml up -d --remove-orphans
+
+            # Limpiar imágenes viejas
+            docker image prune -f

@@ -1,0 +1,93 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: invoice-saas-db
+    environment:
+      POSTGRES_USER: ${DB_USER:-invoiceuser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-SecurePassword123!}
+      POSTGRES_DB: ${DB_NAME:-invoice_saas_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-invoiceuser}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - invoice-saas-network
+
+  api:
+    build:
+      context: .
+      dockerfile: src/InvoiceSaaS.Api/Dockerfile
+      target: development
+    container_name: invoice-saas-api
+    environment:
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=${DB_NAME:-invoice_saas_db};Username=${DB_USER:-invoiceuser};Password=${DB_PASSWORD:-SecurePassword123!};"
+      Jwt__Secret: ${JWT_SECRET:-YourSuperSecretKeyWith32CharactersMinimum!}
+      Jwt__Issuer: ${JWT_ISSUER:-invoice-saas}
+      Jwt__Audience: ${JWT_AUDIENCE:-invoice-saas-users}
+      Jwt__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-15}
+      Jwt__RefreshTokenExpirationDays: ${JWT_REFRESH_EXPIRATION_DAYS:-7}
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:5000
+      Cors__AllowedOrigins__0: http://localhost:3000
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      - api-logs:/app/logs
+    networks:
+      - invoice-saas-network
+
+  frontend:
+    build:
+      context: ./frontend/invoice-saas-ui
+      dockerfile: Dockerfile
+      target: development
+    container_name: invoice-saas-ui
+    ports:
+      - "3000:3000"
+    environment:
+      REACT_APP_API_BASE_URL: http://localhost:5000
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+    depends_on:
+      - api
+    volumes:
+      - ./frontend/invoice-saas-ui/src:/app/src
+      - ./frontend/invoice-saas-ui/public:/app/public
+    networks:
+      - invoice-saas-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: invoice-saas-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+      - frontend
+    networks:
+      - invoice-saas-network
+    profiles:
+      - production
+
+volumes:
+  postgres-data:
+    driver: local
+  api-logs:
+    driver: local
+
+networks:
+  invoice-saas-network:
+    driver: bridge

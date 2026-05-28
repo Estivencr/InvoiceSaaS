@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: invoice-saas-db
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+    networks:
+      - invoice-saas-network
+
+  api:
+    image: ${API_IMAGE}
+    container_name: invoice-saas-api
+    environment:
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD};"
+      Jwt__Secret: ${JWT_SECRET}
+      Jwt__Issuer: ${JWT_ISSUER:-invoice-saas}
+      Jwt__Audience: ${JWT_AUDIENCE:-invoice-saas-users}
+      Jwt__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-15}
+      Jwt__RefreshTokenExpirationDays: ${JWT_REFRESH_EXPIRATION_DAYS:-7}
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:5000
+      Cors__AllowedOrigins__0: ${CORS_ORIGIN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: always
+    networks:
+      - invoice-saas-network
+
+  frontend:
+    image: ${FRONTEND_IMAGE}
+    container_name: invoice-saas-ui
+    restart: always
+    networks:
+      - invoice-saas-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: invoice-saas-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.prod.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+      - frontend
+    restart: always
+    networks:
+      - invoice-saas-network
+
+volumes:
+  postgres-data:
+    driver: local
+
+networks:
+  invoice-saas-network:
+    driver: bridge
