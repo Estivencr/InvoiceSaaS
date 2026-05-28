@@ -69,54 +69,35 @@ jobs:
   # ─────────────────────────────────────────
   build-and-push:
     name: Build & Push to ECR
-    needs: [test-backend, test-frontend]
+    needs: [test-backend]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    outputs:
-      api-image: ${{ steps.tags.outputs.api-image }}
-      frontend-image: ${{ steps.tags.outputs.frontend-image }}
     steps:
       - uses: actions/checkout@v4
-
+      
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-2
-
+      
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Set image tags
-        id: tags
-        run: |
-          REGISTRY=${{ steps.login-ecr.outputs.registry }}
-          SHA=${{ github.sha }}
-          echo "api-image=${REGISTRY}/invoicesaas-api:${SHA}"           >> $GITHUB_OUTPUT
-          echo "frontend-image=${REGISTRY}/invoicesaas-frontend:${SHA}" >> $GITHUB_OUTPUT
-          echo "registry=${REGISTRY}"                                    >> $GITHUB_OUTPUT
-
+      
       - name: Build & push API
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
           docker build \
             --target production \
-            --tag ${{ steps.tags.outputs.api-image }} \
-            --tag ${{ steps.tags.outputs.registry }}/invoicesaas-api:latest \
+            --tag $ECR_REGISTRY/invoice-saas-api:$IMAGE_TAG \
+            --tag $ECR_REGISTRY/invoice-saas-api:latest \
             -f src/InvoiceSaaS.Api/Dockerfile .
-          docker push ${{ steps.tags.outputs.api-image }}
-          docker push ${{ steps.tags.outputs.registry }}/invoicesaas-api:latest
-
-      - name: Build & push Frontend
-        run: |
-          docker build \
-            --target production \
-            --tag ${{ steps.tags.outputs.frontend-image }} \
-            --tag ${{ steps.tags.outputs.registry }}/invoicesaas-frontend:latest \
-            ./frontend/invoice-saas-ui
-          docker push ${{ steps.tags.outputs.frontend-image }}
-          docker push ${{ steps.tags.outputs.registry }}/invoicesaas-frontend:latest
+          docker push $ECR_REGISTRY/invoice-saas-api:$IMAGE_TAG
+          docker push $ECR_REGISTRY/invoice-saas-api:latest
 
   # ─────────────────────────────────────────
   # 4. Deploy a EC2 via SSH
