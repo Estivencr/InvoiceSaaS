@@ -40,6 +40,11 @@ coverage/
 
 ## Claude Code
 .claude/
+CLAUDE.md
+
+## Local dev / DB scripts
+SQL-Schema.sql
+seed.sql
 
 ## IDEs
 .idea/
