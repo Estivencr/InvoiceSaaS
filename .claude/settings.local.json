@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Usuario\\\\OneDrive\\\\Documentos\\\\Personal\\\\2026 con toda\\\\herramientas 3\\\\InvoiceSaaS\\\\frontend\\\\invoice-saas-ui\\\\src\" -Recurse -Directory)",
-      "Bash(ConvertTo-Json -Depth 3)"
-    ]
-  }
-}

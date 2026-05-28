@@ -38,6 +38,9 @@ docker-compose.override.yml
 TestResults/
 coverage/
 
+## Claude Code
+.claude/
+
 ## IDEs
 .idea/
 .vscode/
